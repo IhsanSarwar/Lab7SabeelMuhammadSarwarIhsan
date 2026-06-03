@@ -1,16 +1,16 @@
-require("dotenv").config(); // so we can use .env to store settings
+require("dotenv").config();
 const express = require("express");
-const mongoose = require("mongoose"); // for mongodb
+const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
 const passport = require("passport");
-
 const LocalStrategy = require("passport-local").Strategy;
+
 const app = express();
 
+// ✅ STEP 1: Middleware first — always before routes
 app.use(
   cors({
-    // browsers block requests from different origins unless the server explicitly allows it
     origin: "http://localhost:5173",
     credentials: true,
   })
@@ -27,29 +27,23 @@ app.use(
 );
 
 app.use(passport.initialize());
-
 app.use(passport.session());
 
-console.log("Mongo URI:", process.env.MONGO_URI);
-
+// ✅ STEP 2: Database connection
 mongoose.connect(process.env.MONGO_URI).then(() => {
   console.log("MongoDB Connected");
 });
 
+// ✅ STEP 3: Models — must be required after mongoose connects
 const User = require("./models/User");
 const Room = require("./models/Room");
 const Message = require("./models/Message");
 
+// ✅ STEP 4: Passport config — needs User model to exist
 passport.use(
   new LocalStrategy(async function (username, password, done) {
-    const user = await User.findOne({
-      username: username,
-      password: password,
-    });
-
-    if (!user) {
-      return done(null, false);
-    }
+    const user = await User.findOne({ username, password });
+    if (!user) return done(null, false);
     return done(null, user);
   })
 );
@@ -63,6 +57,7 @@ passport.deserializeUser(async function (id, done) {
   done(null, user);
 });
 
+// ✅ STEP 5: Helper functions
 function generateRoomId() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let id = "";
@@ -76,12 +71,11 @@ function checkAuth(req, res, next) {
   if (req.isAuthenticated()) {
     next();
   } else {
-    res.json({
-      success: false,
-    });
+    res.json({ success: false });
   }
 }
 
+// ✅ STEP 6: Routes — now middleware is ready so these all work
 app.post("/signup", async (req, res) => {
   const user = await User.create({
     username: req.body.username,
@@ -91,9 +85,18 @@ app.post("/signup", async (req, res) => {
 });
 
 app.post("/login", passport.authenticate("local"), function (req, res) {
-  res.json({
-    success: true,
+  res.json({ success: true });
+});
+
+app.post("/logout", (req, res) => {
+  req.logout(function (err) {
+    if (err) return res.json({ success: false });
+    res.json({ success: true });
   });
+});
+
+app.get("/me", checkAuth, (req, res) => {
+  res.json({ username: req.user.username });
 });
 
 app.get("/rooms", checkAuth, async (req, res) => {
@@ -102,17 +105,12 @@ app.get("/rooms", checkAuth, async (req, res) => {
 });
 
 app.post("/create-room", checkAuth, async (req, res) => {
-  const room = await Room.create({
-    roomId: generateRoomId(),
-  });
-
+  const room = await Room.create({ roomId: generateRoomId() });
   res.json(room);
 });
 
 app.get("/messages/:roomId", checkAuth, async (req, res) => {
-  const messages = await Message.find({
-    roomId: req.params.roomId,
-  });
+  const messages = await Message.find({ roomId: req.params.roomId });
   res.json(messages);
 });
 
@@ -128,15 +126,49 @@ app.post("/send-message", checkAuth, async (req, res) => {
 
 app.post("/reply/:messageId", checkAuth, async (req, res) => {
   const message = await Message.findById(req.params.messageId);
-
-  message.replies.push({
-    username: req.user.username,
-    text: req.body.text,
-  });
+  message.replies.push({ username: req.user.username, text: req.body.text });
   await message.save();
   res.json(message);
 });
 
+app.put("/messages/:messageId", checkAuth, async (req, res) => {
+  const message = await Message.findById(req.params.messageId);
+  if (message.username !== req.user.username) {
+    return res.json({ success: false, error: "Not your message" });
+  }
+  message.text = req.body.text;
+  await message.save();
+  res.json(message);
+});
+
+app.delete("/messages/:messageId", checkAuth, async (req, res) => {
+  const message = await Message.findById(req.params.messageId);
+  if (message.username !== req.user.username) {
+    return res.json({ success: false, error: "Not your message" });
+  }
+  await Message.findByIdAndDelete(req.params.messageId);
+  res.json({ success: true });
+});
+
+app.post("/messages/:messageId/thumbsUp", checkAuth, async (req, res) => {
+  const message = await Message.findByIdAndUpdate(
+    req.params.messageId,
+    { $inc: { thumbsUp: 1 } },
+    { new: true }
+  );
+  res.json(message);
+});
+
+app.post("/messages/:messageId/thumbsDown", checkAuth, async (req, res) => {
+  const message = await Message.findByIdAndUpdate(
+    req.params.messageId,
+    { $inc: { thumbsDown: 1 } },
+    { new: true }
+  );
+  res.json(message);
+});
+
+// ✅ STEP 7: Start the server — always last
 app.listen(8080, () => {
   console.log("Server running on port 8080");
 });
